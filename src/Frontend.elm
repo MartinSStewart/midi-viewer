@@ -87,7 +87,6 @@ viewPage : FrontendModel -> Html FrontendMsg
 viewPage model =
     Html.div
         [ Html.Attributes.style "font-family" "system-ui, sans-serif"
-        , Html.Attributes.style "max-width" "1100px"
         , Html.Attributes.style "margin" "0 auto"
         , Html.Attributes.style "padding" "24px 16px 64px 16px"
         , Html.Attributes.style "color" "#1c2733"
