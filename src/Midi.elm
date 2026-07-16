@@ -12,11 +12,14 @@ module Midi exposing
     , TracksType(..)
     , Velocity
     , demoRecording
+    , durationSeconds
     , eox
     , eventFromBytes
     , eventToBytes
     , fromBytes
+    , pianoRollScrollId
     , playbackNotes
+    , playheadX
     , toBytes
     , validRecording
     , viewRecording
@@ -985,14 +988,15 @@ playbackNotes recording =
             )
 
 
-tickToSeconds : MidiRecording -> Ticks -> Float
-tickToSeconds recording =
+{-| Segments of constant tempo as ( startTick, startSeconds, secondsPerTick ),
+ordered latest-first so a lookup takes the first segment at or before a given
+tick (or, reading the second field, at or before a given time in seconds).
+-}
+tempoSegments : MidiRecording -> List ( Ticks, Float, Float )
+tempoSegments recording =
     let
         ticksPerBeat =
             toFloat (max 1 (ticksPerBeatOf recording))
-
-        defaultSecondsPerTick =
-            500000 / 1000000 / ticksPerBeat
 
         tempoEvents : List ( Ticks, Int )
         tempoEvents =
@@ -1013,23 +1017,34 @@ tickToSeconds recording =
                             |> Tuple.second
                     )
                 |> List.sortBy Tuple.first
+    in
+    List.foldl
+        (\( tick, microsPerBeat ) ( earlier, ( prevTick, prevSeconds, prevRate ) ) ->
+            ( ( prevTick, prevSeconds, prevRate ) :: earlier
+            , ( tick
+              , prevSeconds + toFloat (tick - prevTick) * prevRate
+              , toFloat microsPerBeat / 1000000 / ticksPerBeat
+              )
+            )
+        )
+        ( [], ( 0, 0, defaultSecondsPerTick recording ) )
+        tempoEvents
+        |> (\( earlier, last ) -> last :: earlier)
 
-        -- segments of constant tempo as ( startTick, startSeconds, secondsPerTick ),
-        -- ordered latest-first so a lookup takes the first segment at or before the tick
-        segments : List ( Ticks, Float, Float )
+
+defaultSecondsPerTick : MidiRecording -> Float
+defaultSecondsPerTick recording =
+    500000 / 1000000 / toFloat (max 1 (ticksPerBeatOf recording))
+
+
+tickToSeconds : MidiRecording -> Ticks -> Float
+tickToSeconds recording =
+    let
         segments =
-            List.foldl
-                (\( tick, microsPerBeat ) ( earlier, ( prevTick, prevSeconds, prevRate ) ) ->
-                    ( ( prevTick, prevSeconds, prevRate ) :: earlier
-                    , ( tick
-                      , prevSeconds + toFloat (tick - prevTick) * prevRate
-                      , toFloat microsPerBeat / 1000000 / ticksPerBeat
-                      )
-                    )
-                )
-                ( [], ( 0, 0, defaultSecondsPerTick ) )
-                tempoEvents
-                |> (\( earlier, last ) -> last :: earlier)
+            tempoSegments recording
+
+        fallbackRate =
+            defaultSecondsPerTick recording
     in
     \tick ->
         case List.filter (\( startTick, _, _ ) -> startTick <= tick) segments of
@@ -1037,23 +1052,95 @@ tickToSeconds recording =
                 startSeconds + toFloat (tick - startTick) * secondsPerTick
 
             [] ->
-                toFloat tick * defaultSecondsPerTick
+                toFloat tick * fallbackRate
+
+
+{-| The inverse of `tickToSeconds`: turn an elapsed time in seconds into the
+(fractional) tick that plays at that moment.
+-}
+secondsToTick : MidiRecording -> Float -> Float
+secondsToTick recording seconds =
+    case List.filter (\( _, startSeconds, _ ) -> startSeconds <= seconds) (tempoSegments recording) of
+        ( startTick, startSeconds, secondsPerTick ) :: _ ->
+            toFloat startTick + (seconds - startSeconds) / secondsPerTick
+
+        [] ->
+            seconds / defaultSecondsPerTick recording
+
+
+{-| How long the recording lasts, in seconds (the end of its last note).
+-}
+durationSeconds : MidiRecording -> Float
+durationSeconds recording =
+    tickToSeconds recording (extractNotes recording).totalTicks
+
+
+{-| The horizontal pixel offset, in piano-roll coordinates, of the note playing
+at the given elapsed time. Used to scroll the roll in time with playback.
+-}
+playheadX : MidiRecording -> Float -> Float
+playheadX recording seconds =
+    secondsToTick recording seconds / toFloat (max 1 (ticksPerBeatOf recording)) * pxPerBeat
 
 
 
 -- RENDERING (HTML)
 
 
-viewRecording : MidiRecording -> Html msg
-viewRecording recording =
+{-| Horizontal pixels per beat in the piano roll. Shared so that the playhead
+and scrolling line up exactly with the rendered notes.
+-}
+pxPerBeat : Float
+pxPerBeat =
+    128
+
+
+{-| The DOM id of the scrollable piano-roll viewport, so the app can scroll it
+programmatically to follow playback.
+-}
+pianoRollScrollId : String
+pianoRollScrollId =
+    "piano-roll-scroll"
+
+
+{-| Render a recording. When `elapsed` is `Just` a time in seconds (i.e. while
+playing), the currently sounding keys are highlighted and a playhead is drawn.
+-}
+viewRecording : Maybe Float -> MidiRecording -> Html msg
+viewRecording elapsed recording =
     let
         extracted =
             extractNotes recording
+
+        -- notes sounding right now, as note number -> channel (for colouring)
+        active =
+            case elapsed of
+                Just seconds ->
+                    let
+                        toSeconds =
+                            tickToSeconds recording
+                    in
+                    extracted.notes
+                        |> List.filterMap
+                            (\note ->
+                                if toSeconds note.start <= seconds && seconds < toSeconds (note.start + note.duration) then
+                                    Just ( note.note, note.channel )
+
+                                else
+                                    Nothing
+                            )
+                        |> Dict.fromList
+
+                Nothing ->
+                    Dict.empty
+
+        playheadTick =
+            Maybe.map (\seconds -> secondsToTick recording (max 0 seconds)) elapsed
     in
     Html.div []
         [ viewSummary recording extracted
         , viewChannelLegend extracted.notes
-        , viewPianoRoll (ticksPerBeatOf recording) extracted
+        , viewPianoRoll (ticksPerBeatOf recording) active playheadTick extracted
         , Html.h2 [ Html.Attributes.style "margin" "32px 0 8px 0" ] [ Html.text "Events" ]
         , Html.div [] (List.indexedMap viewTrack (tracksOf recording))
         ]
@@ -1151,8 +1238,8 @@ viewChannelLegend notes =
         )
 
 
-viewPianoRoll : Int -> { notes : List PianoNote, totalTicks : Ticks } -> Html msg
-viewPianoRoll ticksPerBeat { notes, totalTicks } =
+viewPianoRoll : Int -> Dict Note Channel -> Maybe Float -> { notes : List PianoNote, totalTicks : Ticks } -> Html msg
+viewPianoRoll ticksPerBeat active playheadTick { notes, totalTicks } =
     if List.isEmpty notes then
         Html.p [] [ Html.text "This recording contains no notes, so there is nothing to draw." ]
 
@@ -1198,7 +1285,7 @@ viewPianoRoll ticksPerBeat { notes, totalTicks } =
                 toFloat safeTotal / toFloat (max 1 ticksPerBeat)
 
             rollWidth =
-                round (beats * 128)
+                round (beats * pxPerBeat)
 
             pxPerTick =
                 toFloat rollWidth / toFloat safeTotal
@@ -1208,6 +1295,36 @@ viewPianoRoll ticksPerBeat { notes, totalTicks } =
 
             blackKeyWidth =
                 34
+
+            -- a coloured overlay on every key that is sounding right now
+            keyHighlights =
+                Dict.toList active
+                    |> List.filterMap
+                        (\( note, channel ) ->
+                            if note < lowNote || note > highNote then
+                                Nothing
+
+                            else
+                                Just
+                                    (Svg.rect
+                                        [ Svg.Attributes.x "0"
+                                        , Svg.Attributes.y (String.fromInt (yFor note))
+                                        , Svg.Attributes.width
+                                            (String.fromInt
+                                                (if isBlackKey note then
+                                                    blackKeyWidth
+
+                                                 else
+                                                    keyboardWidth
+                                                )
+                                            )
+                                        , Svg.Attributes.height (String.fromInt (rowHeight note))
+                                        , Svg.Attributes.fill (channelColor channel)
+                                        , Svg.Attributes.fillOpacity "0.85"
+                                        ]
+                                        []
+                                    )
+                        )
 
             pianoKeys =
                 Svg.rect
@@ -1263,6 +1380,7 @@ viewPianoRoll ticksPerBeat { notes, totalTicks } =
                                         [ Svg.text (noteName note) ]
                                 )
                        )
+                    ++ keyHighlights
 
             keyRows =
                 List.range lowNote highNote
@@ -1347,6 +1465,24 @@ viewPianoRoll ticksPerBeat { notes, totalTicks } =
                             ]
                     )
                     notes
+
+            -- a vertical line marking the current playback position
+            playhead =
+                case playheadTick of
+                    Just tick ->
+                        [ Svg.line
+                            [ Svg.Attributes.x1 (String.fromFloat (tick * pxPerTick))
+                            , Svg.Attributes.x2 (String.fromFloat (tick * pxPerTick))
+                            , Svg.Attributes.y1 "0"
+                            , Svg.Attributes.y2 (String.fromInt rollHeight)
+                            , Svg.Attributes.stroke "#e0245e"
+                            , Svg.Attributes.strokeWidth "1.5"
+                            ]
+                            []
+                        ]
+
+                    Nothing ->
+                        []
         in
         Html.div
             [ Html.Attributes.style "display" "flex"
@@ -1365,7 +1501,9 @@ viewPianoRoll ticksPerBeat { notes, totalTicks } =
                 ]
                 pianoKeys
             , Html.div
-                [ Html.Attributes.style "overflow-x" "auto" ]
+                [ Html.Attributes.id pianoRollScrollId
+                , Html.Attributes.style "overflow-x" "auto"
+                ]
                 [ Svg.svg
                     [ Svg.Attributes.width (String.fromInt rollWidth)
                     , Svg.Attributes.height (String.fromInt rollHeight)
@@ -1373,7 +1511,7 @@ viewPianoRoll ticksPerBeat { notes, totalTicks } =
                         ("0 0 " ++ String.fromInt rollWidth ++ " " ++ String.fromInt rollHeight)
                     , Html.Attributes.style "display" "block"
                     ]
-                    (keyRows ++ beatLines ++ noteRects)
+                    (keyRows ++ beatLines ++ noteRects ++ playhead)
                 ]
             ]
 

@@ -37,6 +37,10 @@ type alias FrontendModel_ =
     -- piano samples used for playback, keyed by the MIDI note they are a recording of
     , pianoSamples : Dict Int (Result Audio.LoadError Audio.Source)
     , playbackStart : Maybe Time.Posix
+
+    -- the current wall-clock time, updated each animation frame while playing so
+    -- the piano roll can scroll and highlight keys in time with the music
+    , now : Time.Posix
     }
 
 
@@ -55,6 +59,8 @@ type FrontendMsg_
     | PressedPlay
     | GotPlaybackStartTime Time.Posix
     | PressedStop
+    | Tick Time.Posix
+    | NoOp
 
 
 type ToBackend

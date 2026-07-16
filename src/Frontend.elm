@@ -2,6 +2,8 @@ module Frontend exposing (app)
 
 import Audio exposing (Audio, AudioData)
 import Browser exposing (UrlRequest(..))
+import Browser.Dom
+import Browser.Events
 import Browser.Navigation
 import Dict
 import File
@@ -35,7 +37,7 @@ app =
             , onUrlChange = UrlChanged
             , update = update
             , updateFromBackend = updateFromBackend
-            , subscriptions = \_ _ -> Sub.none
+            , subscriptions = subscriptions
             , view = view
             , audio = audio
             , audioPort = { toJS = Ports.audioPortToJS, fromJS = Ports.audioPortFromJS }
@@ -62,6 +64,7 @@ init _ key =
       , recording = Ok Midi.demoRecording
       , pianoSamples = Dict.empty
       , playbackStart = Nothing
+      , now = Time.millisToPosix 0
       }
     , Cmd.none
     , pianoSampleUrls
@@ -117,13 +120,50 @@ update _ msg model =
 
         GotPlaybackStartTime time ->
             -- start a moment in the future so notes at tick 0 aren't skipped
-            ( { model | playbackStart = Just (addMillis 200 time) }
+            ( { model | playbackStart = Just (addMillis 200 time), now = time }
             , Cmd.none
             , Audio.cmdNone
             )
 
         PressedStop ->
             ( { model | playbackStart = Nothing }, Cmd.none, Audio.cmdNone )
+
+        Tick time ->
+            case ( model.playbackStart, model.recording ) of
+                ( Just start, Ok recording ) ->
+                    let
+                        elapsed =
+                            toFloat (Time.posixToMillis time - Time.posixToMillis start) / 1000
+                    in
+                    if elapsed > Midi.durationSeconds recording + 0.5 then
+                        -- playback has run past the end: stop and reset the button
+                        ( { model | now = time, playbackStart = Nothing }, Cmd.none, Audio.cmdNone )
+
+                    else
+                        -- scroll the roll so the playhead stays a little in from the left edge
+                        ( { model | now = time }
+                        , Browser.Dom.setViewportOf Midi.pianoRollScrollId
+                            (max 0 (Midi.playheadX recording (max 0 elapsed) - 140))
+                            0
+                            |> Task.attempt (\_ -> NoOp)
+                        , Audio.cmdNone
+                        )
+
+                _ ->
+                    ( { model | now = time }, Cmd.none, Audio.cmdNone )
+
+        NoOp ->
+            ( model, Cmd.none, Audio.cmdNone )
+
+
+subscriptions : AudioData -> FrontendModel_ -> Sub FrontendMsg_
+subscriptions _ model =
+    case model.playbackStart of
+        Just _ ->
+            Browser.Events.onAnimationFrame Tick
+
+        Nothing ->
+            Sub.none
 
 
 updateFromBackend : AudioData -> ToFrontend -> FrontendModel_ -> ( FrontendModel_, Cmd FrontendMsg_, Audio.AudioCmd FrontendMsg_ )
@@ -272,8 +312,18 @@ viewPage model =
                     [ Html.text message ]
 
             Ok recording ->
-                Midi.viewRecording recording
+                Midi.viewRecording (elapsedSeconds model) recording
         ]
+
+
+{-| Seconds since playback began, or Nothing when not playing. Negative during
+the short lead-in before the first note.
+-}
+elapsedSeconds : FrontendModel_ -> Maybe Float
+elapsedSeconds model =
+    Maybe.map
+        (\start -> toFloat (Time.posixToMillis model.now - Time.posixToMillis start) / 1000)
+        model.playbackStart
 
 
 playbackButton : FrontendModel_ -> Html FrontendMsg_
