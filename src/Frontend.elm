@@ -144,8 +144,6 @@ audio _ model =
             Midi.playbackNotes recording
                 |> List.map (noteAudio samples startTime)
                 |> Audio.group
-                -- headroom so chords don't clip
-                |> Audio.scaleVolume 0.5
 
         _ ->
             Audio.silence
