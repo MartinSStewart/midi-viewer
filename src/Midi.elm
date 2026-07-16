@@ -5,6 +5,7 @@ module Midi exposing
     , MidiMessage
     , MidiRecording(..)
     , Note
+    , PlaybackNote
     , SysExFlavour(..)
     , Ticks
     , Track
@@ -15,6 +16,7 @@ module Midi exposing
     , eventFromBytes
     , eventToBytes
     , fromBytes
+    , playbackNotes
     , toBytes
     , validRecording
     , viewRecording
@@ -944,6 +946,98 @@ closeNote trackIndex channel note time state =
 
         _ ->
             state
+
+
+
+-- PLAYBACK
+
+
+type alias PlaybackNote =
+    { note : Note
+    , velocity : Velocity
+    , start : Float -- seconds
+    , duration : Float -- seconds
+    }
+
+
+{-| All notes in a recording, with their start time and duration converted
+from ticks to seconds using the recording's tempo events (MIDI's default of
+120 bpm applies when none are present).
+-}
+playbackNotes : MidiRecording -> List PlaybackNote
+playbackNotes recording =
+    let
+        toSeconds =
+            tickToSeconds recording
+    in
+    (extractNotes recording).notes
+        |> List.map
+            (\pianoNote ->
+                let
+                    start =
+                        toSeconds pianoNote.start
+                in
+                { note = pianoNote.note
+                , velocity = pianoNote.velocity
+                , start = start
+                , duration = toSeconds (pianoNote.start + pianoNote.duration) - start
+                }
+            )
+
+
+tickToSeconds : MidiRecording -> Ticks -> Float
+tickToSeconds recording =
+    let
+        ticksPerBeat =
+            toFloat (max 1 (ticksPerBeatOf recording))
+
+        defaultSecondsPerTick =
+            500000 / 1000000 / ticksPerBeat
+
+        tempoEvents : List ( Ticks, Int )
+        tempoEvents =
+            tracksOf recording
+                |> List.concatMap
+                    (\track ->
+                        List.foldl
+                            (\( deltaTicks, event ) ( time, acc ) ->
+                                case event of
+                                    Tempo microsPerBeat ->
+                                        ( time + deltaTicks, ( time + deltaTicks, microsPerBeat ) :: acc )
+
+                                    _ ->
+                                        ( time + deltaTicks, acc )
+                            )
+                            ( 0, [] )
+                            track
+                            |> Tuple.second
+                    )
+                |> List.sortBy Tuple.first
+
+        -- segments of constant tempo as ( startTick, startSeconds, secondsPerTick ),
+        -- ordered latest-first so a lookup takes the first segment at or before the tick
+        segments : List ( Ticks, Float, Float )
+        segments =
+            List.foldl
+                (\( tick, microsPerBeat ) ( earlier, ( prevTick, prevSeconds, prevRate ) ) ->
+                    ( ( prevTick, prevSeconds, prevRate ) :: earlier
+                    , ( tick
+                      , prevSeconds + toFloat (tick - prevTick) * prevRate
+                      , toFloat microsPerBeat / 1000000 / ticksPerBeat
+                      )
+                    )
+                )
+                ( [], ( 0, 0, defaultSecondsPerTick ) )
+                tempoEvents
+                |> (\( earlier, last ) -> last :: earlier)
+    in
+    \tick ->
+        case List.filter (\( startTick, _, _ ) -> startTick <= tick) segments of
+            ( startTick, startSeconds, secondsPerTick ) :: _ ->
+                startSeconds + toFloat (tick - startTick) * secondsPerTick
+
+            [] ->
+                toFloat tick * defaultSecondsPerTick
 
 
 
