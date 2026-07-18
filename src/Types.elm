@@ -41,6 +41,7 @@ type alias FrontendModel_ =
     -- the current wall-clock time, updated each animation frame while playing so
     -- the piano roll can scroll and highlight keys in time with the music
     , now : Time.Posix
+    , dummyField : Int
     }
 
 
