@@ -65,6 +65,7 @@ init _ key =
       , pianoSamples = Dict.empty
       , playbackStart = Nothing
       , now = Time.millisToPosix 0
+      , dummyField = 123
       }
     , Cmd.none
     , pianoSampleUrls
