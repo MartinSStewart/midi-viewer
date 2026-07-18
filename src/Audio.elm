@@ -1,10 +1,10 @@
 module Audio exposing
-    ( elementWithAudio, documentWithAudio, applicationWithAudio, Model, Msg, AudioData
-    , AudioCmd, loadAudio, LoadError(..), Source, cmdMap, cmdBatch, cmdNone
-    , Audio, audio, group, silence, length, audioWithConfig, audioDefaultConfig, PlayAudioConfig, LoopConfig
+    ( elementWithAudio, documentWithAudio, applicationWithAudio, Model(..), Msg, AudioData
+    , AudioCmd, loadAudio, LoadError(..), Source(..), cmdMap, cmdBatch, cmdNone
+    , Audio(..), audio, group, silence, length, audioWithConfig, audioDefaultConfig, PlayAudioConfig, LoopConfig
     , scaleVolume, scaleVolumeAt, offsetBy
     , lamderaFrontendWithAudio, migrateModel, migrateMsg
-    , FlattenedAudio, diffAudioState, flattenAudio, sourceWithBufferId
+    , AudioLoadRequest_, BufferId(..), EffectType(..), FlattenedAudio, Model_, diffAudioState, flattenAudio, sourceWithBufferId
     )
 
 {-|
